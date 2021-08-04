@@ -5,6 +5,7 @@ import (
 	"Task/model"
 	"context"
 	"encoding/json"
+	"log"
 	"net/http"
 	"sync"
 	"time"
@@ -15,6 +16,12 @@ import (
 )
 
 func main() {
+
+	logrus.SetFormatter(&logrus.TextFormatter{
+		DisableColors: false,
+		FullTimestamp: true,
+		ForceColors:   true,
+	})
 
 	var db model.DB
 
@@ -32,20 +39,21 @@ func main() {
 
 	db.ConnectDB(viper.GetString("DB.dsn"))
 
+	if viper.GetBool("DB.migrate") == true {
+		err = db.Db.AutoMigrate(&model.Price{})
+		if err != nil {
+			logrus.WithFields(logrus.Fields{
+				"module": "main",
+				"method": "main",
+			}).Warn("Can't migrate tables:/n", err)
+		}
+	}
+
 	wg := new(sync.WaitGroup)
 	defer wg.Wait()
 	ctx, _ := context.WithCancel(context.Background())
 
 	workersCount := viper.GetInt("worker.count")
-
-	err = db.Db.AutoMigrate(&model.Price{})
-	if err != nil {
-		logrus.WithFields(logrus.Fields{
-			"module": "main",
-			"method": "main",
-		}).Warn("Can't migrate tables:/n", err)
-	}
-
 	workers := make([]chan *model.Data, workersCount)
 
 	resp, err := http.Get("https://api.binance.com/api/v3/ticker/price")
@@ -70,12 +78,9 @@ func main() {
 
 	for i := 0; i < workersCount; i++ {
 		wg.Add(1)
-	
 		workers[i] = make(chan *model.Data)
-		go worker(ctx, workers[i], db.Db)
-
+		go worker(ctx, workers[i], db.Db, wg)
 	}
-	wg.Wait()
 
 	rem := len(p) % workersCount
 	part := len(p) / workersCount
@@ -83,7 +88,7 @@ func main() {
 	end := rem + part - 1
 
 	for i := 0; i < workersCount && end < len(p); i++ {
-		logrus.Println(start, end)
+		log.Println(start, end)
 		workers[i] <- &model.Data{TimeStamp: timeStamp, Prices: p[start:end]}
 		start += part
 		end += part
@@ -95,7 +100,7 @@ func main() {
 
 func createReq(ctx context.Context, db *gorm.DB, p *model.Data) {
 	timeoutContext, cancel := context.WithTimeout(ctx, time.Duration(time.Second*10))
-	defer p.Wg.Done()
+
 	defer cancel()
 	for _, v := range p.Prices {
 		tx := db.WithContext(timeoutContext).Model(model.Price{}).Where("symbol = ?", v.Symbol).Updates(model.Price{Symbol: v.Symbol, Price: v.Price, TimeStamp: p.TimeStamp})
@@ -106,8 +111,8 @@ func createReq(ctx context.Context, db *gorm.DB, p *model.Data) {
 	}
 }
 
-func worker(ctx context.Context, prices chan *model.Data, db *gorm.DB) {
-	// defer p.Wg.Done()
+func worker(ctx context.Context, prices chan *model.Data, db *gorm.DB, wg *sync.WaitGroup) {
+	defer wg.Done()
 	for {
 		select {
 		case <-ctx.Done():
@@ -116,7 +121,5 @@ func worker(ctx context.Context, prices chan *model.Data, db *gorm.DB) {
 		case p := <-prices:
 			createReq(ctx, db, p)
 		}
-
 	}
-
 }
