@@ -56,51 +56,53 @@ func main() {
 	workersCount := viper.GetInt("worker.count")
 	workers := make([]chan *model.Data, workersCount)
 
-	resp, err := http.Get("https://api.binance.com/api/v3/ticker/price")
-	if err != nil {
-		logrus.WithFields(logrus.Fields{
-			"module": "main",
-			"method": "main",
-		}).Warn("GET URL:/n", err)
-	}
+	for {
+		resp, err := http.Get("https://api.binance.com/api/v3/ticker/price")
+		if err != nil {
+			logrus.WithFields(logrus.Fields{
+				"module": "main",
+				"method": "main",
+			}).Warn("GET URL:/n", err)
+		}
 
-	timeStamp := time.Now()
-	var p []model.Price
+		timeStamp := time.Now()
+		var p []model.Price
 
-	err = json.NewDecoder(resp.Body).Decode(&p)
+		err = json.NewDecoder(resp.Body).Decode(&p)
 
-	if err != nil {
-		logrus.WithFields(logrus.Fields{
-			"module": "main",
-			"method": "main",
-		}).Warn("Error Decoder:/n", err)
-	}
+		if err != nil {
+			logrus.WithFields(logrus.Fields{
+				"module": "main",
+				"method": "main",
+			}).Warn("Error Decoder:/n", err)
+		}
 
-	for i := 0; i < workersCount; i++ {
-		wg.Add(1)
-		workers[i] = make(chan *model.Data)
-		go worker(ctx, workers[i], db.Db, wg)
-	}
+		for i := 0; i < workersCount; i++ {
+			wg.Add(1)
+			workers[i] = make(chan *model.Data)
+			go worker(ctx, workers[i], db.Db, wg)
+		}
 
-	rem := len(p) % workersCount
-	part := len(p) / workersCount
-	start := 0
-	end := rem + part - 1
+		rem := len(p) % workersCount
+		part := len(p) / workersCount
+		start := 0
+		end := rem + part - 1
 
-	for i := 0; i < workersCount && end < len(p); i++ {
-		log.Println(start, end)
-		workers[i] <- &model.Data{TimeStamp: timeStamp, Prices: p[start:end]}
-		start += part
-		end += part
-		if part == 0 {
-			break
+		for i := 0; i < workersCount && end < len(p); i++ {
+			log.Println(start, end)
+			workers[i] <- &model.Data{TimeStamp: timeStamp, Prices: p[start:end]}
+			start += part
+			end += part
+			if part == 0 {
+				break
+			}
 		}
 	}
+
 }
 
 func createReq(ctx context.Context, db *gorm.DB, p *model.Data) {
 	timeoutContext, cancel := context.WithTimeout(ctx, time.Duration(time.Second*10))
-
 	defer cancel()
 	for _, v := range p.Prices {
 		tx := db.WithContext(timeoutContext).Model(model.Price{}).Where("symbol = ?", v.Symbol).Updates(model.Price{Symbol: v.Symbol, Price: v.Price, TimeStamp: p.TimeStamp})
