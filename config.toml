@@ -3,4 +3,4 @@ dsn = "host=localhost user=master password=tron dbname=app port=5432 sslmode=dis
 
 [worker]
 count = 4
-frequency = 1
+latency = 5
