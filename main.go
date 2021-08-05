@@ -88,20 +88,26 @@ func main() {
 		start := 0
 		end := rem + part - 1
 
+		wgWork := new(sync.WaitGroup)
+
 		for i := 0; i < workersCount && end < len(p); i++ {
 			log.Println(start, end)
-			workers[i] <- &model.Data{TimeStamp: timeStamp, Prices: p[start:end]}
+			wg.Add(1)
+			workers[i] <- &model.Data{TimeStamp: timeStamp, Prices: p[start:end], Wg: wgWork}
 			start += part
 			end += part
 			if part == 0 {
 				break
 			}
 		}
+		wgWork.Wait()
+		time.Sleep(time.Second)
 	}
 
 }
 
 func createReq(ctx context.Context, db *gorm.DB, p *model.Data) {
+	defer p.Wg.Done()
 	timeoutContext, cancel := context.WithTimeout(ctx, time.Duration(time.Second*10))
 	defer cancel()
 	for _, v := range p.Prices {
