@@ -1,9 +1,16 @@
 [DB]
+# config connect to db
 dsn = "host=localhost user=master password=tron dbname=app port=5432 sslmode=disable TimeZone=Asia/Shanghai"
 migrate = true
 
 [worker]
-count = 4
-latency = 5
+#number of threads
+count = 2
+
+#latency (milliseconds) between program cycles
+latency = 100
+
+# parametr determines how fast data will be added to the Db
+flowDuration = 3   
 
 

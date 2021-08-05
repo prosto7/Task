@@ -5,7 +5,7 @@ import (
 	"Task/model"
 	"context"
 	"encoding/json"
-	"log"
+	"fmt"
 	"net/http"
 	"sync"
 	"time"
@@ -48,11 +48,10 @@ func main() {
 			}).Warn("Can't migrate tables:/n", err)
 		}
 	}
-
 	wg := new(sync.WaitGroup)
 	defer wg.Wait()
 	ctx, _ := context.WithCancel(context.Background())
-
+	latency := viper.GetDuration("worker.latency")
 	workersCount := viper.GetInt("worker.count")
 	workers := make([]chan *model.Data, workersCount)
 
@@ -63,37 +62,38 @@ func main() {
 				"module": "main",
 				"method": "main",
 			}).Warn("GET URL:/n", err)
+			fmt.Println("Error", err)
 		}
 
 		timeStamp := time.Now()
-		var p []model.Price
+		var price []model.Price
 
-		err = json.NewDecoder(resp.Body).Decode(&p)
-
+		err = json.NewDecoder(resp.Body).Decode(&price)
 		if err != nil {
+			fmt.Println("Error", err)
 			logrus.WithFields(logrus.Fields{
 				"module": "main",
 				"method": "main",
 			}).Warn("Error Decoder:/n", err)
 		}
-
+		// create multithreading
 		for i := 0; i < workersCount; i++ {
 			wg.Add(1)
 			workers[i] = make(chan *model.Data)
 			go worker(ctx, workers[i], db.Db, wg)
 		}
-
-		rem := len(p) % workersCount
-		part := len(p) / workersCount
+		// flow distribution logic
+		rem := len(price) % workersCount
+		part := len(price) / workersCount
 		start := 0
 		end := rem + part - 1
 
+		//synchronization implementation of goroutines
 		wgWork := new(sync.WaitGroup)
-
-		for i := 0; i < workersCount && end < len(p); i++ {
-			log.Println(start, end)
-			wg.Add(1)
-			workers[i] <- &model.Data{TimeStamp: timeStamp, Prices: p[start:end], Wg: wgWork}
+		for i := 0; i < workersCount && end < len(price); i++ {
+			logrus.Println(start, end)
+			wgWork.Add(1)
+			workers[i] <- &model.Data{TimeStamp: timeStamp, Prices: price[start:end], Wg: wgWork}
 			start += part
 			end += part
 			if part == 0 {
@@ -101,17 +101,19 @@ func main() {
 			}
 		}
 		wgWork.Wait()
-		time.Sleep(time.Second)
+		// latency between cycle goroutines
+		time.Sleep(latency * time.Millisecond)
 	}
-
 }
 
-func createReq(ctx context.Context, db *gorm.DB, p *model.Data) {
-	defer p.Wg.Done()
-	timeoutContext, cancel := context.WithTimeout(ctx, time.Duration(time.Second*10))
+func FillDB(ctx context.Context, db *gorm.DB, price *model.Data) {
+	flowDuration := viper.GetDuration("worker.flowDuration")
+	defer price.Wg.Done()
+	timeoutContext, cancel := context.WithTimeout(ctx, time.Second*flowDuration)
 	defer cancel()
-	for _, v := range p.Prices {
-		tx := db.WithContext(timeoutContext).Model(model.Price{}).Where("symbol = ?", v.Symbol).Updates(model.Price{Symbol: v.Symbol, Price: v.Price, TimeStamp: p.TimeStamp})
+	db = db.WithContext(timeoutContext)
+	for _, v := range price.Prices {
+		tx := db.WithContext(timeoutContext).Model(model.Price{}).Where("symbol = ?", v.Symbol).Updates(model.Price{Symbol: v.Symbol, Price: v.Price, TimeStamp: price.TimeStamp})
 		if tx.RowsAffected == 0 {
 			v.TimeStamp = time.Now()
 			db.WithContext(timeoutContext).Create(&v)
@@ -124,10 +126,9 @@ func worker(ctx context.Context, prices chan *model.Data, db *gorm.DB, wg *sync.
 	for {
 		select {
 		case <-ctx.Done():
-
 			return
-		case p := <-prices:
-			createReq(ctx, db, p)
+		case price := <-prices:
+			FillDB(ctx, db, price)
 		}
 	}
 }
